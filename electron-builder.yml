@@ -1,0 +1,58 @@
+appId: com.stemforge.app
+productName: STEMFORGE
+copyright: Copyright © 2026
+
+directories:
+  output: dist-desktop
+
+asar: true
+npmRebuild: true
+
+# внутрь приложения кладём только оболочку; инструменты сборки исключаем
+files:
+  - package.json
+  - electron/**/*
+  - "!**/*.map"
+  - "!node_modules/electron/**"
+  - "!node_modules/electron-builder/**"
+  - "!node_modules/@types/**"
+
+# веб-сервер и статика — в ресурсы (читаемые из пакета)
+extraResources:
+  - from: .next/standalone
+    to: next/standalone
+  - from: .next/static
+    to: next/standalone/.next/static
+  - from: public
+    to: next/standalone/public
+  - from: .desktop-tools/uv.exe
+    to: tools/uv.exe
+  - from: scripts/local-separator.py
+    to: ml/local-separator.py
+  - from: scripts/local-transcribe.py
+    to: ml/local-transcribe.py
+
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.png
+  artifactName: "${productName}-Setup-${version}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: STEMFORGE
+  displayLanguageSelector: false
+  installerLanguages: ["ru_RU", "en_US"]
+  language: "1049"
+
+portable:
+  artifactName: "${productName}-Portable-${version}.${ext}"
+
+publish: null

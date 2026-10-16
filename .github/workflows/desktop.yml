@@ -1,0 +1,41 @@
+name: Windows Desktop
+
+# Сборка нативного инсталлятора STEMFORGE-Setup.exe и портативной версии.
+# Запуск: вкладка Actions → "Windows Desktop" → Run workflow,
+# либо push тега вида v1.0.0 — готовый .exe появится в Artifacts.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build web app
+        run: npm run build
+        env:
+          # нужен только для импорта модулей на этапе сборки
+          DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/app_db
+
+      - name: Prepare local ML runtime manager
+        run: npm run desktop:prepare
+
+      - name: Package Electron app (NSIS + portable)
+        run: npx electron-builder --win --publish never
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: STEMFORGE-Windows
+          path: dist-desktop/*.exe
+          retention-days: 30

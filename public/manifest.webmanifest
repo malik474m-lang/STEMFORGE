@@ -1,0 +1,13 @@
+{
+  "name": "STEMFORGE — студия разделения треков",
+  "short_name": "STEMFORGE",
+  "description": "Разделение MP3 на вокал, инструментал, бэк-вокал, бас и ударные. Улучшение и экспорт в WAV/MP3.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#04050a",
+  "theme_color": "#04050a",
+  "lang": "ru",
+  "icons": [
+    { "src": "/icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" }
+  ]
+}
