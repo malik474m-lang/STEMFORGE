@@ -1,7 +1,7 @@
 {
   "name": "stemforge",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "STEMFORGE — студия разделения звука: вокал, инструментал, бэк-вокал, бас, ударные. Веб и нативное приложение для Windows.",
   "main": "electron/main.cjs",
   "scripts": {
@@ -11,8 +11,7 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "desktop:dev": "node scripts/dev-desktop.mjs",
-    "desktop:prepare": "node scripts/prepare-desktop-tools.mjs",
-    "desktop:dist": "npm run build && npm run desktop:prepare && electron-builder --win --publish never"
+    "desktop:dist": "npm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "@breezystack/lamejs": "^1.2.7",

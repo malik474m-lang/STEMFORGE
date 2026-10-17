@@ -25,8 +25,6 @@ extraResources:
     to: next/standalone/.next/static
   - from: public
     to: next/standalone/public
-  - from: .desktop-tools/uv.exe
-    to: tools/uv.exe
   - from: scripts/local-separator.py
     to: ml/local-separator.py
   - from: scripts/local-transcribe.py

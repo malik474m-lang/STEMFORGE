@@ -1,6 +1,8 @@
 import "server-only";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { get } from "node:https";
+import { inflateRawSync } from "node:zlib";
 import path from "node:path";
 import crypto from "node:crypto";
 
@@ -32,9 +34,111 @@ export const pythonPath = () =>
   (process.platform === "win32"
     ? path.join(runtimeDir(), "Scripts", "python.exe")
     : path.join(runtimeDir(), "bin", "python"));
-export const uvPath = () => process.env.LOCAL_AI_UV || (process.platform === "win32" ? "uv.exe" : "uv");
+export const toolsDir = () => path.join(dataDir(), "tools");
+export const uvPath = () =>
+  process.env.LOCAL_AI_UV || path.join(toolsDir(), process.platform === "win32" ? "uv.exe" : "uv");
+export const ffmpegPath = () =>
+  process.env.LOCAL_AI_FFMPEG || path.join(toolsDir(), process.platform === "win32" ? "ffmpeg.exe" : "ffmpeg");
 export const workerPath = () => process.env.LOCAL_AI_WORKER || path.join(/* turbopackIgnore: true */ process.cwd(), "scripts", "local-separator.py");
 export const transcribeWorkerPath = () => process.env.LOCAL_AI_TRANSCRIBE_WORKER || path.join(/* turbopackIgnore: true */ process.cwd(), "scripts", "local-transcribe.py");
+
+/** PATH, в который добавлен ffmpeg — обязателен для python-audio-separator. */
+export function envWithFfmpeg(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  if (existsSync(ffmpegPath())) {
+    env.PATH = `${path.dirname(ffmpegPath())}${path.delimiter}${env.PATH ?? ""}`;
+  }
+  return env;
+}
+
+/* ---------------- скачивание инструментов (uv, ffmpeg) чистым Node ---------------- */
+
+const UV_URL = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip";
+const FFMPEG_URL =
+  "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip";
+
+function downloadFile(url: string, dest: string, job: LocalJob, label: string, fromP: number, toP: number): Promise<void> {
+  return new Promise((resolveFn, rejectFn) => {
+    const go = (u: string, depth: number) => {
+      if (depth > 8) return rejectFn(new Error("слишком много редиректов"));
+      get(u, { headers: { "user-agent": "stemforge" } }, (res) => {
+        if ([301, 302, 303, 307, 308].includes(res.statusCode ?? 0)) {
+          res.resume();
+          return go(new URL(res.headers.location ?? "", u).toString(), depth + 1);
+        }
+        if (res.statusCode !== 200) {
+          return rejectFn(new Error(`HTTP ${res.statusCode} при скачивании ${label}`));
+        }
+        const total = Number(res.headers["content-length"] ?? 0);
+        let got = 0;
+        const file = createWriteStream(dest);
+        res.on("data", (chunk: Buffer) => {
+          got += chunk.length;
+          if (total > 0) {
+            job.label = `${label} — ${Math.round((got / total) * 100)}%`;
+            job.progress = fromP + (got / total) * (toP - fromP);
+          }
+        });
+        res.pipe(file);
+        file.on("finish", () => file.close(() => resolveFn()));
+        file.on("error", rejectFn);
+      }).on("error", rejectFn);
+    };
+    go(url, 0);
+  });
+}
+
+/** Минимальный ZIP-распаковщик на встроенном zlib (store/DEFLATE), с выбором нужных файлов. */
+function extractZip(zipPath: string, destDir: string, wanted: (name: string) => boolean) {
+  const buf = readFileSync(zipPath);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= 0 && i >= buf.length - 66000; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) { eocd = i; break; }
+  }
+  if (eocd < 0) throw new Error("ZIP: EOCD не найден");
+  const total = buf.readUInt16LE(eocd + 10);
+  let off = buf.readUInt32LE(eocd + 16);
+
+  for (let e = 0; e < total; e++) {
+    if (buf.readUInt32LE(off) !== 0x02014b50) throw new Error("ZIP: плохой центральный заголовок");
+    const method = buf.readUInt16LE(off + 10);
+    const csize = buf.readUInt32LE(off + 20);
+    const usize = buf.readUInt32LE(off + 24);
+    const nlen = buf.readUInt16LE(off + 28);
+    const elen = buf.readUInt16LE(off + 30);
+    const clen = buf.readUInt16LE(off + 32);
+    const lho = buf.readUInt32LE(off + 42);
+    const name = buf.subarray(off + 46, off + 46 + nlen).toString("utf8");
+    off += 46 + nlen + elen + clen;
+    if (name.endsWith("/") || !wanted(name)) continue;
+
+    const fnlen = buf.readUInt16LE(lho + 26);
+    const felen = buf.readUInt16LE(lho + 28);
+    const dataStart = lho + 30 + fnlen + felen;
+    const comp = buf.subarray(dataStart, dataStart + csize);
+    const data = method === 0 ? comp : method === 8 ? inflateRawSync(comp) : null;
+    if (!data) throw new Error(`ZIP: метод ${method} не поддерживается`);
+    if (data.length !== usize) throw new Error(`ZIP: размер не совпал для ${name}`);
+    mkdirSync(destDir, { recursive: true });
+    writeFileSync(path.join(destDir, path.basename(name)), data);
+  }
+}
+
+/** uv + ffmpeg есть? если нет — скачивание прямо на ПК пользователя. */
+async function ensureTools(job: LocalJob) {
+  mkdirSync(toolsDir(), { recursive: true });
+  if (!existsSync(uvPath())) {
+    const zip = path.join(toolsDir(), "uv.zip");
+    await downloadFile(UV_URL, zip, job, "Скачивание менеджера uv", 0.02, 0.1);
+    extractZip(zip, toolsDir(), (n: string) => path.basename(n) === "uv.exe");
+  }
+  if (process.platform === "win32" && !existsSync(ffmpegPath())) {
+    const zip = path.join(toolsDir(), "ffmpeg.zip");
+    await downloadFile(FFMPEG_URL, zip, job, "Скачивание FFmpeg (≈90 МБ)", 0.1, 0.28);
+    extractZip(zip, toolsDir(), (n: string) => /[/\\](ffmpeg|ffprobe)\.exe$/i.test(n));
+  }
+  if (!existsSync(uvPath())) throw new Error("uv.exe не установлен после скачивания");
+}
 
 function keepLog(job: LocalJob, line: string) {
   if (!line.trim()) return;
@@ -59,14 +163,12 @@ function run(cmd: string, args: string[], job: LocalJob, env?: Record<string, st
 }
 
 export function getRuntimeStatus() {
-  const python = pythonPath();
-  const uv = uvPath();
   return {
     desktop: process.env.DB_DRIVER === "sqlite",
-    ready: existsSync(python) && existsSync(path.join(runtimeDir(), ".stemforge-ready")),
-    python,
-    uv,
-    uvAvailable: existsSync(uv) || uv === "uv" || uv === "uv.exe",
+    ready: existsSync(pythonPath()) && existsSync(path.join(runtimeDir(), ".stemforge-ready")),
+    python: pythonPath(),
+    uv: uvPath(),
+    ffmpeg: ffmpegPath(),
     modelDir: modelDir(),
     setupJob: [...jobs.values()].reverse().find((j) => j.kind === "setup") ?? null,
   };
@@ -89,17 +191,20 @@ export function startSetup(): LocalJob {
       mkdirSync(dataDir(), { recursive: true });
       mkdirSync(modelDir(), { recursive: true });
       job.state = "running";
+      job.label = "Подготовка инструментов (uv, ffmpeg)…";
+      job.progress = 0.01;
+      await ensureTools(job);
       job.label = "Установка локального Python 3.11…";
-      job.progress = 0.08;
-      await run(uvPath(), ["venv", runtimeDir(), "--python", "3.11", "--python-preference", "managed"], job);
-      job.label = "Установка нейросетевого CPU-runtime…";
       job.progress = 0.3;
+      await run(uvPath(), ["venv", runtimeDir(), "--python", "3.11", "--python-preference", "managed"], job);
+      job.label = "Установка нейросетевого CPU-runtime (≈2–4 ГБ)…";
+      job.progress = 0.45;
       await run(uvPath(), [
         "pip", "install", "--python", pythonPath(),
         "audio-separator[cpu]", "faster-whisper",
       ], job, { UV_LINK_MODE: "copy" });
       job.label = "Проверка локального AI…";
-      job.progress = 0.92;
+      job.progress = 0.93;
       await run(pythonPath(), ["-c", "from audio_separator.separator import Separator; from faster_whisper import WhisperModel; print('READY')"], job);
       writeFileSync(path.join(runtimeDir(), ".stemforge-ready"), new Date().toISOString(), "utf8");
       job.state = "done";
@@ -128,7 +233,7 @@ export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"
     job.state = "running";
     const child = spawn(pythonPath(), [
       workerPath(), "--input", inputPath, "--output", output, "--models", modelDir(), "--mode", mode,
-    ], { windowsHide: true, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    ], { windowsHide: true, env: envWithFfmpeg(), stdio: ["ignore", "pipe", "pipe"] });
     let pending = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
@@ -180,7 +285,7 @@ export function startTranscription(inputPath: string, language: string): LocalJo
     const child = spawn(pythonPath(), [
       transcribeWorkerPath(), "--input", inputPath,
       "--models", path.join(modelDir(), "whisper"), "--language", language,
-    ], { windowsHide: true, env: process.env, stdio: ["ignore", "pipe", "pipe"] });
+    ], { windowsHide: true, env: envWithFfmpeg(), stdio: ["ignore", "pipe", "pipe"] });
     let pending = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {

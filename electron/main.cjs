@@ -75,7 +75,6 @@ function startEmbeddedServer() {
     DB_DRIVER: "sqlite",
     SQLITE_PATH: dbPath,
     STEMFORGE_DATA_DIR: app.getPath("userData"),
-    LOCAL_AI_UV: path.join(process.resourcesPath, "tools", "uv.exe"),
     LOCAL_AI_PYTHON: path.join(app.getPath("userData"), "ml-runtime", "Scripts", "python.exe"),
     LOCAL_AI_WORKER: path.join(process.resourcesPath, "ml", "local-separator.py"),
     LOCAL_AI_TRANSCRIBE_WORKER: path.join(process.resourcesPath, "ml", "local-transcribe.py"),
