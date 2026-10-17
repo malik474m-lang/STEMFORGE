@@ -169,6 +169,8 @@ export function getRuntimeStatus() {
     python: pythonPath(),
     uv: uvPath(),
     ffmpeg: ffmpegPath(),
+    ffmpegPresent: existsSync(ffmpegPath()),
+    uvPresent: existsSync(uvPath()),
     modelDir: modelDir(),
     setupJob: [...jobs.values()].reverse().find((j) => j.kind === "setup") ?? null,
   };
@@ -229,8 +231,16 @@ export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"
   const output = path.join(jobsDir(), job.id, "output");
   mkdirSync(output, { recursive: true });
 
-  void new Promise<void>((resolve, reject) => {
+  void (async () => {
+    // Авто-лечение: если ffmpeg/uv ещё не скачан (старый runtime) — докачиваем прямо перед задачей
+    if (!existsSync(ffmpegPath())) {
+      job.state = "running";
+      job.label = "Докачиваю FFmpeg…";
+      await ensureTools(job);
+    }
+  })().then(() => new Promise<void>((resolve, reject) => {
     job.state = "running";
+    job.label = "Запуск локальной нейросети…";
     const child = spawn(pythonPath(), [
       workerPath(), "--input", inputPath, "--output", output, "--models", modelDir(), "--mode", mode,
     ], { windowsHide: true, env: envWithFfmpeg(), stdio: ["ignore", "pipe", "pipe"] });
@@ -260,7 +270,7 @@ export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"
     child.stderr.on("data", (s: string) => s.split(/\r?\n/).forEach((x) => keepLog(job, x)));
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`ML worker: код ${code}`)));
-  }).then(() => {
+  })).then(() => {
     if (!job.stems || Object.keys(job.stems).length === 0) throw new Error("Нейросеть не вернула стемы");
     job.state = "done";
     job.label = "Разделение завершено";
@@ -281,7 +291,12 @@ export function startTranscription(inputPath: string, language: string): LocalJo
     label: "Запуск локального Whisper…", progress: 0.03, logs: [], createdAt: Date.now(),
   };
   jobs.set(job.id, job);
-  void new Promise<void>((resolve, reject) => {
+  void (async () => {
+    if (!existsSync(ffmpegPath())) {
+      job.label = "Докачиваю FFmpeg…";
+      await ensureTools(job);
+    }
+  })().then(() => new Promise<void>((resolve, reject) => {
     const child = spawn(pythonPath(), [
       transcribeWorkerPath(), "--input", inputPath,
       "--models", path.join(modelDir(), "whisper"), "--language", language,
@@ -310,7 +325,7 @@ export function startTranscription(inputPath: string, language: string): LocalJo
     child.stderr.on("data", (s: string) => s.split(/\r?\n/).forEach((x) => keepLog(job, x)));
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`Whisper worker: код ${code}`)));
-  }).then(() => {
+  })).then(() => {
     if (!job.result) throw new Error("Whisper не вернул текст");
     job.state = "done";
     job.label = "Текст распознан";
