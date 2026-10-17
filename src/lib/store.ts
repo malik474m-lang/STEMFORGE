@@ -78,8 +78,9 @@ function sanitize(name: string): string {
 
 interface StudioState {
   phase: Phase;
-  mode: "local" | "dsp" | "ai";
+  mode: "local" | "dsp" | "ai" | "mvsep";
   aiAvailable: boolean | null;
+  mvsepAvailable: boolean;
   localAiReady: boolean;
   localAiDesktop: boolean;
   localAiInstalling: boolean;
@@ -122,7 +123,7 @@ interface StudioState {
   checkLocalAi: () => Promise<void>;
   setupLocalAi: () => Promise<void>;
   setLocalMlQuality: (q: "pro" | "fast") => void;
-  setMode: (m: "local" | "dsp" | "ai") => void;
+  setMode: (m: "local" | "dsp" | "ai" | "mvsep") => void;
   loadFile: (file: File) => Promise<void>;
   cancel: () => void;
   resetSession: () => void;
@@ -231,6 +232,7 @@ export const useStudio = create<StudioState>((set, get) => {
     phase: "idle",
     mode: "local",
     aiAvailable: null,
+    mvsepAvailable: false,
     localAiReady: false,
     localAiDesktop: false,
     localAiInstalling: false,
@@ -275,6 +277,13 @@ export const useStudio = create<StudioState>((set, get) => {
         set({ aiAvailable: Boolean(data.available) });
       } catch {
         set({ aiAvailable: false });
+      }
+      try {
+        const res = await fetch("/api/mvsep/gender", { cache: "no-store" });
+        const data = await res.json();
+        set({ mvsepAvailable: Boolean(data.available) });
+      } catch {
+        set({ mvsepAvailable: false });
       }
     },
 
@@ -374,6 +383,8 @@ export const useStudio = create<StudioState>((set, get) => {
         if (mode === "local") {
           if (!get().localAiReady) throw new Error("Сначала установите локальный AI-модуль");
           await runLocalSeparation(buffer, set);
+        } else if (mode === "mvsep") {
+          await runMvsepSeparation(buffer, set);
         } else if (mode === "ai" && get().aiAvailable) {
           await runAiSeparation(file, set);
         } else {
@@ -386,7 +397,7 @@ export const useStudio = create<StudioState>((set, get) => {
           return;
         }
 
-        const defs = get().mode === "local" || (get().mode === "ai" && get().aiAvailable) ? AI_STEMS : DSP_STEMS;
+        const defs = get().mode === "local" || get().mode === "mvsep" || (get().mode === "ai" && get().aiAvailable) ? AI_STEMS : DSP_STEMS;
         const stemsUI: StemUI[] = defs
           .filter((d) => session.stems.has(d.id))
           .map((d) => ({
@@ -889,6 +900,56 @@ async function runLocalSeparation(
     set({ progressLabel: `Загрузка стема «${key}»…`, progressPct: 0.96 + (i / entries.length) * 0.04 });
     const response = await fetch(url);
     if (!response.ok) throw new Error(`Не удалось прочитать стем ${key}`);
+    const decoded = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(await response.arrayBuffer());
+    const stereo = decoded.numberOfChannels === 1
+      ? (() => {
+          const b = new AudioBuffer({ numberOfChannels: 2, length: decoded.length, sampleRate: decoded.sampleRate });
+          b.copyToChannel(decoded.getChannelData(0), 0);
+          b.copyToChannel(decoded.getChannelData(0), 1);
+          return b;
+        })()
+      : decoded;
+    map.set(key, { buffer: stereo, peaks: computePeaks(stereo), offset: 0, dry: stereo });
+  }
+  session.stems = map;
+}
+
+async function runMvsepSeparation(
+  buffer: AudioBuffer,
+  set: (p: Partial<StudioState> | ((s: StudioState) => Partial<StudioState>)) => void,
+) {
+  set({ phase: "separating", progressLabel: "Подготовка WAV для MVSep…", progressPct: 0.02 });
+  const wav = encodeWav(buffer, 16);
+  const form = new FormData();
+  form.append("file", new File([wav], "track.wav", { type: "audio/wav" }));
+  form.append("kind", "six");
+  const start = await fetch("/api/mvsep/separate", { method: "POST", body: form });
+  const started = await start.json();
+  if (!start.ok || !started.hash) throw new Error(started.error || "MVSep не принял задачу");
+
+  set({ progressLabel: "Загрузка трека завершена — очередь на мощностях MVSep…", progressPct: 0.1 });
+  let files: Record<string, string> | null = null;
+  let p = 0.1;
+  for (let i = 0; i < 480; i++) {
+    if (cancelFlag) return;
+    await new Promise((r) => setTimeout(r, 5000));
+    const res = await fetch(`/api/mvsep/status?hash=${encodeURIComponent(started.hash)}`, { cache: "no-store" });
+    const status = await res.json();
+    p = Math.min(0.9, p + 0.004);
+    set({ progressLabel: "MVSep разделяет трек на своих серверах…", progressPct: p });
+    if (status.status === "done") { files = status.files; break; }
+    if (status.status === "failed") throw new Error("MVSep не смог обработать трек");
+  }
+  if (!files || Object.keys(files).length === 0) throw new Error("MVSep завершил задачу, но не вернул стемы");
+
+  const map = new Map<string, { buffer: AudioBuffer; peaks: Float32Array; offset: number; dry: AudioBuffer }>();
+  const entries = Object.entries(files);
+  for (let i = 0; i < entries.length; i++) {
+    const [key, url] = entries[i];
+    const encoded = btoa(url).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    set({ progressLabel: `Загрузка стема «${key}»…`, progressPct: 0.9 + (i / entries.length) * 0.1 });
+    const response = await fetch(`/api/mvsep/file?u=${encodeURIComponent(encoded)}`);
+    if (!response.ok) throw new Error(`Не удалось скачать стем ${key}`);
     const decoded = await new OfflineAudioContext(2, 1, 44100).decodeAudioData(await response.arrayBuffer());
     const stereo = decoded.numberOfChannels === 1
       ? (() => {

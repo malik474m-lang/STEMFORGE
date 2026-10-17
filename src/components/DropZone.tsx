@@ -11,6 +11,7 @@ export default function DropZone() {
   const mode = useStudio((s) => s.mode);
   const setMode = useStudio((s) => s.setMode);
   const aiAvailable = useStudio((s) => s.aiAvailable);
+  const mvsepAvailable = useStudio((s) => s.mvsepAvailable);
   const localAiReady = useStudio((s) => s.localAiReady);
   const localAiDesktop = useStudio((s) => s.localAiDesktop);
   const localAiInstalling = useStudio((s) => s.localAiInstalling);
@@ -47,6 +48,17 @@ export default function DropZone() {
             Local AI · бесплатно
           </button>
           <button
+            onClick={() => mvsepAvailable && setMode("mvsep")}
+            disabled={!useStudio((s) => s.mvsepAvailable)}
+            title={useStudio((s) => s.mvsepAvailable) ? "Облако MVSep, бесплатная очередь — ваш процессор свободен" : "Добавьте MVSEP_API_TOKEN в .env (регистрация бесплатная)"}
+            className={`flex items-center gap-2 rounded-full px-4 py-2 text-[12px] font-bold tracking-wide transition ${
+              mode === "mvsep" ? "bg-amber-x/15 text-amber-x shadow-[inset_0_0_0_1px_rgba(251,191,36,0.45)]" : useStudio((s) => s.mvsepAvailable) ? "text-dim hover:text-ink" : "cursor-not-allowed text-dim/40"
+            }`}
+          >
+            <CloudUpload className="size-3.5" />
+            MVSep Cloud{!useStudio((s) => s.mvsepAvailable) && " (нет токена)"}
+          </button>
+          <button
             onClick={() => aiAvailable && setMode("ai")}
             disabled={!aiAvailable}
             title={aiAvailable ? "Облачный Demucs" : "Добавьте REPLICATE_API_TOKEN"}
@@ -61,9 +73,11 @@ export default function DropZone() {
         <p className="max-w-2xl text-[12px] leading-relaxed text-dim">
           {mode === "local"
             ? "Настоящее локальное ML-разделение: BS-RoFormer (чистые вокал/минус) + HTDemucs 6s (ударные, бас, гитара, пианино, прочее). Без API и оплаты."
-            : mode === "ai"
-              ? "Облачный Demucs через Replicate. Требует рабочий токен и оплачиваемый GPU-аккаунт."
-              : "Важно: DSP — это только Mid/Side-фильтрация для быстрого предпросмотра. Она НЕ создаёт чистые независимые стемы."}
+            : mode === "mvsep"
+              ? "Бесплатное облако MVSep: BS-RoFormer SW (вокал, бас, ударные, гитара, пианино, прочее) на мощных серверах — ваш слабый процессор свободен. Очередь 5–15 минут."
+              : mode === "ai"
+                ? "Облачный Demucs через Replicate. Требует рабочий токен и оплачиваемый GPU-аккаунт."
+                : "Важно: DSP — это только Mid/Side-фильтрация для быстрого предпросмотра. Она НЕ создаёт чистые независимые стемы."}
         </p>
       </div>
 

@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     const form = new FormData();
     form.append("audiofile", file, "clean-vocals.wav");
     form.append("api_token", token);
-    form.append("sep_type", "66"); // официальный MVSep Male/Female separation
+    form.append("sep_type", "56"); // официальный MVSep Male/Female separation (id из списка алгоритмов)
     form.append("output_format", "1"); // WAV
     form.append("is_demo", "0");
     const res = await fetch(`${API}/separation/create`, { method: "POST", body: form });
