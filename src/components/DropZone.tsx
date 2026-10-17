@@ -17,6 +17,8 @@ export default function DropZone() {
   const localAiLabel = useStudio((s) => s.localAiLabel);
   const localAiProgress = useStudio((s) => s.localAiProgress);
   const setupLocalAi = useStudio((s) => s.setupLocalAi);
+  const localMlQuality = useStudio((s) => s.localMlQuality);
+  const setLocalMlQuality = useStudio((s) => s.setLocalMlQuality);
   const [drag, setDrag] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -64,6 +66,21 @@ export default function DropZone() {
               : "Важно: DSP — это только Mid/Side-фильтрация для быстрого предпросмотра. Она НЕ создаёт чистые независимые стемы."}
         </p>
       </div>
+
+      {mode === "local" && localAiReady && (
+        <div className="mb-5 flex flex-wrap items-center gap-3 rounded-2xl border border-lime-x/25 bg-lime-x/5 px-4 py-3">
+          <span className="text-[11px] font-bold tracking-widest text-lime-x uppercase">Local AI готов</span>
+          <select
+            value={localMlQuality}
+            onChange={(e) => setLocalMlQuality(e.target.value as "pro" | "fast")}
+            className="ml-auto rounded-lg border border-line bg-void/60 px-3 py-2 text-[12px] font-semibold text-ink outline-none"
+            title="Баланс скорости и качества разделения"
+          >
+            <option value="pro">Максимум качества (RoFormer + Demucs — медленно на CPU)</option>
+            <option value="fast">Быстро: вокал/минус (onnx MDX)</option>
+          </select>
+        </div>
+      )}
 
       {mode === "local" && !localAiReady && (
         <div className="mb-5 rounded-2xl border border-lime-x/35 bg-lime-x/5 p-5">

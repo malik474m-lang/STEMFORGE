@@ -221,7 +221,7 @@ export function startSetup(): LocalJob {
   return job;
 }
 
-export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"): LocalJob {
+export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro" | "fast"): LocalJob {
   if (!existsSync(pythonPath())) throw new Error("local_ai_not_installed");
   const job: LocalJob = {
     id: crypto.randomUUID(), kind: "separate", state: "queued", label: "Запуск локальной нейросети…",
@@ -241,8 +241,23 @@ export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"
   })().then(() => new Promise<void>((resolve, reject) => {
     job.state = "running";
     job.label = "Запуск локальной нейросети…";
+    let inferBase = 0.18;
+    let inferCeil = 0.94;
+    let inferModel = "модель";
+
+    const parseTqdm = (line: string) => {
+      const pct = /(\d{1,3})%\|/.exec(line);
+      if (!pct) return;
+      const p = Math.min(100, Number(pct[1])) / 100;
+      job.progress = inferBase + p * (inferCeil - inferBase);
+      const eta = /<(\d+):(\d+)/.exec(line);
+      job.label = eta
+        ? `Инференс ${inferModel} — ${Math.round(p * 100)}% · осталось ~${Number(eta[1])}:${eta[2]}`
+        : `Инференс ${inferModel} — ${Math.round(p * 100)}%`;
+    };
+
     const child = spawn(pythonPath(), [
-      workerPath(), "--input", inputPath, "--output", output, "--models", modelDir(), "--mode", mode,
+      workerPath(), "--input", inputPath, "--output", output, "--models", modelDir(), "--mode", mode === "fast" ? "fast" : mode,
     ], { windowsHide: true, env: envWithFfmpeg(), stdio: ["ignore", "pipe", "pipe"] });
     let pending = "";
     child.stdout.setEncoding("utf8");
@@ -257,17 +272,30 @@ export function startSeparation(inputPath: string, mode: "clean" | "six" | "pro"
           if (e.event === "stage") {
             job.label = String(e.label);
             job.progress = Number(e.progress) || job.progress;
+          } else if (e.event === "infer") {
+            inferModel = String(e.model ?? "модель");
+            inferBase = Number(e.base) || 0.18;
+            inferCeil = Number(e.ceiling) || 0.94;
+            job.label = `Инференс ${inferModel}…`;
+            job.progress = inferBase;
           } else if (e.event === "done") {
             job.stems = e.stems;
             job.progress = 1;
           } else if (e.event === "error") {
             job.error = e.message;
           }
-        } catch { /* обычный лог библиотеки */ }
+        } catch {
+          parseTqdm(line);
+        }
       }
     });
     child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (s: string) => s.split(/\r?\n/).forEach((x) => keepLog(job, x)));
+    child.stderr.on("data", (s: string) =>
+      s.replace(/\r/g, "\n").split(/\n/).forEach((x) => {
+        keepLog(job, x);
+        parseTqdm(x);
+      }),
+    );
     child.on("error", reject);
     child.on("exit", (code) => code === 0 ? resolve() : reject(new Error(`ML worker: код ${code}`)));
   })).then(() => {

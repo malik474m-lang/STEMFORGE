@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """
 STEMFORGE local ML worker.
-Настоящее source separation через python-audio-separator:
-- clean: BS-RoFormer -> vocals + instrumental
-- six: HTDemucs 6s -> vocals, drums, bass, guitar, piano, other
-- pro: BS-RoFormer для чистых vocal/instrumental + HTDemucs для инструментов
+- pro: BS-RoFormer (чистые vocals/instrumental) + HTDemucs 6s (ударные/бас/гитара/пианино/прочее)
+- clean: только BS-RoFormer на максимальном качестве
+- six: только htdemucs_6s
+- fast: быстрый онnx MDX (UVR-MDX-NET-Inst_HQ_3) — только вокал/минус, сильно быстрее на слабом CPU
 
 Протокол stdout: одна JSON-строка на событие.
+Событие "infer" задаёт базовую зону прогресса; Node читает tqdm-проценты из stderr.
 """
 from __future__ import annotations
 
@@ -40,10 +41,10 @@ def detect_stem(name: str) -> str | None:
     return None
 
 
-def run_model(input_file: Path, output_dir: Path, model: str, model_dir: Path, prefix: str):
+def run_model(input_file: Path, output_dir: Path, model: str, model_dir: Path, prefix: str, base: float, ceil: float):
     from audio_separator.separator import Separator
 
-    emit("stage", label=f"Загрузка модели {model}", progress=0.08)
+    emit("stage", label=f"Загрузка модели {model}", progress=base * 0.6)
     separator = Separator(
         log_level=20,
         model_file_dir=str(model_dir),
@@ -52,7 +53,8 @@ def run_model(input_file: Path, output_dir: Path, model: str, model_dir: Path, p
         normalization_threshold=0.95,
     )
     separator.load_model(model_filename=model)
-    emit("stage", label=f"Разделение: {model}", progress=0.18)
+    # старт инференса: прогресс между base..ceil обновляется по tqdm-строкам на стороне Node
+    emit("infer", model=model, base=base, ceiling=ceil)
     files = separator.separate(str(input_file))
     mapped = {}
     for item in files:
@@ -76,7 +78,7 @@ def main():
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
     ap.add_argument("--models", required=True)
-    ap.add_argument("--mode", choices=["clean", "six", "pro"], default="pro")
+    ap.add_argument("--mode", choices=["clean", "six", "pro", "fast"], default="pro")
     args = ap.parse_args()
 
     input_file = Path(args.input).resolve()
@@ -85,16 +87,29 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Лучший доступный 2-stem vocal model из реестра audio-separator.
     clean_model = os.environ.get(
         "STEMFORGE_VOCAL_MODEL",
         "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
     )
+    fast_model = os.environ.get(
+        "STEMFORGE_FAST_MODEL",
+        "UVR-MDX-NET-Inst_HQ_3.onnx",
+    )
     six_model = os.environ.get("STEMFORGE_6STEM_MODEL", "htdemucs_6s.yaml")
 
     result = {}
+    if args.mode == "fast":
+        fast = run_model(input_file, output_dir, fast_model, model_dir, "fast-", 0.18, 0.92)
+        for stem in ("vocals", "instrumental"):
+            if stem in fast:
+                final = output_dir / f"{stem}.wav"
+                shutil.copy2(fast[stem], final)
+                result[stem] = str(final)
+        emit("stage", label="Готово (быстрый режим)", progress=0.94)
+
     if args.mode in ("clean", "pro"):
-        clean = run_model(input_file, output_dir, clean_model, model_dir, "clean-")
+        ceil = 0.5 if args.mode == "pro" else 0.92
+        clean = run_model(input_file, output_dir, clean_model, model_dir, "clean-", 0.18, ceil)
         for stem in ("vocals", "instrumental"):
             if stem in clean:
                 final = output_dir / f"{stem}.wav"
@@ -103,7 +118,7 @@ def main():
         emit("stage", label="Чистый вокал отделён", progress=0.52 if args.mode == "pro" else 0.92)
 
     if args.mode in ("six", "pro"):
-        six = run_model(input_file, output_dir, six_model, model_dir, "demucs-")
+        six = run_model(input_file, output_dir, six_model, model_dir, "demucs-", 0.6 if args.mode == "pro" else 0.18, 0.94)
         for stem in ("drums", "bass", "guitar", "piano", "other"):
             if stem in six:
                 final = output_dir / f"{stem}.wav"

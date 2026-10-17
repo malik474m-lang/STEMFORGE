@@ -85,6 +85,7 @@ interface StudioState {
   localAiInstalling: boolean;
   localAiLabel: string;
   localAiProgress: number;
+  localMlQuality: "pro" | "fast";
   error: string | null;
   fileName: string;
   fileSize: number;
@@ -120,6 +121,7 @@ interface StudioState {
   checkAi: () => Promise<void>;
   checkLocalAi: () => Promise<void>;
   setupLocalAi: () => Promise<void>;
+  setLocalMlQuality: (q: "pro" | "fast") => void;
   setMode: (m: "local" | "dsp" | "ai") => void;
   loadFile: (file: File) => Promise<void>;
   cancel: () => void;
@@ -234,6 +236,7 @@ export const useStudio = create<StudioState>((set, get) => {
     localAiInstalling: false,
     localAiLabel: "",
     localAiProgress: 0,
+    localMlQuality: "pro",
     error: null,
     fileName: "",
     fileSize: 0,
@@ -322,6 +325,8 @@ export const useStudio = create<StudioState>((set, get) => {
         get().setToast(e instanceof Error ? e.message : String(e));
       }
     },
+
+    setLocalMlQuality: (q) => set({ localMlQuality: q }),
 
     setMode: (m) => {
       if (get().phase !== "idle" && get().phase !== "error") {
@@ -854,7 +859,7 @@ async function runLocalSeparation(
   const wav = encodeWav(buffer, 16);
   const form = new FormData();
   form.append("file", new File([wav], "input.wav", { type: "audio/wav" }));
-  form.append("mode", "pro");
+  form.append("mode", useStudio.getState().localMlQuality === "fast" ? "fast" : "pro");
   const start = await fetch("/api/local-ai/separate", { method: "POST", body: form });
   const started = await start.json();
   if (!start.ok || !started.jobId) throw new Error(started.error || "Не удалось запустить локальное разделение");
